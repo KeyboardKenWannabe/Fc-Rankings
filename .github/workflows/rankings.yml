@@ -2,8 +2,11 @@ name: Scrape Fightcade Rankings
 
 on:
   schedule:
-    - cron: '35 3 * * *' # Ejecuta todos los días a las 03:35 UTC
-  workflow_dispatch:      # Te permite correrlo manualmente cuando quieras desde la web de GitHub
+    - cron: '35 3 * * *' # Todos los días a las 03:35 UTC
+  workflow_dispatch:      # Para correrlo manualmente desde GitHub
+
+permissions:
+  contents: write         # Necesario para que el bot pueda hacer push
 
 jobs:
   run-scraper:
@@ -25,4 +28,9 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update daily rankings snapshot" && git push)
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update daily rankings"
+            git push
+          fi
