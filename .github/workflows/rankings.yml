@@ -1,23 +1,28 @@
-name: Actualizar rankings
+name: Scrape Fightcade Rankings
+
 on:
   schedule:
-    - cron: '17 9 * * *'     # una vez al día (09:17 UTC)
-  workflow_dispatch: {}      # botón "Run workflow" para probar a mano
-permissions:
-  contents: write
+    - cron: '35 3 * * *' # Ejecuta todos los días a las 03:35 UTC
+  workflow_dispatch:      # Te permite correrlo manualmente cuando quieras desde la web de GitHub
+
 jobs:
-  scrape:
+  run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: node scrape.mjs
-      - name: Commit
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run scraper
+        run: node scrape.mjs
+
+      - name: Commit and push changes if any
         run: |
-          git config user.name "ranking-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add data
-          git diff --cached --quiet || git commit -m "rankings $(date -u +%F)"
-          git push
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update daily rankings snapshot" && git push)
