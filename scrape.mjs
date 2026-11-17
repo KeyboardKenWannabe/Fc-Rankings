@@ -10,12 +10,13 @@ import fs from 'node:fs';
 
 const ENDPOINT = process.env.FC_ENDPOINT || 'https://web.fightcade.com/api/';
 const LIMIT = 100;
-const BASE_GAP = Number(process.env.FC_GAP_MS || 2500);   // pausa normal entre solicitudes (ms)
-const REQ_TIMEOUT = 20000;
-const MAX_RETRIES = 3;
-const MAX_CONSEC_FAILS = 4;          // páginas seguidas fallidas -> se abandona ese juego
+const BASE_GAP = Number(process.env.FC_GAP_MS || 8000);   // pausa normal entre solicitudes (ms)
+const REQ_TIMEOUT = Number(process.env.FC_TIMEOUT_MS || 45000);   // las páginas profundas tardan más en el servidor
+const RETRY_BASE = Number(process.env.FC_RETRY_MS || 6000);
+const MAX_RETRIES = 2;               // 3 intentos por página
+const MAX_GAME_MS = Number(process.env.FC_GAME_MS || 40 * 60 * 1000);   // tope por juego
 const SHRINK_LIMIT = 0.5;            // si el resultado nuevo es < 50% del anterior, se descarta
-const MAX_RUN_MS = 70 * 60 * 1000;   // tope total de la ejecución
+const MAX_RUN_MS = 300 * 60 * 1000;  // tope total de la ejecución (los juegos del final se omiten si se acaba)
 
 const t0 = Date.now();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,7 +41,7 @@ const extractRows = (j, d = 0) => {
 };
 
 let gap = BASE_GAP;                                   // se adapta: sube al haber quejas, baja despacio
-const slower = () => { gap = Math.min(gap * 2, 20000); };
+const slower = () => { gap = Math.min(gap * 2, 60000); };
 const faster = () => { gap = Math.max(BASE_GAP, Math.round(gap * 0.85)); };
 
 async function fetchPage(gameid, page) {
@@ -74,8 +75,9 @@ async function fetchPage(gameid, page) {
     } catch (e) {
       if (e instanceof Blocked) throw e;
       lastErr = e;
+      if (/timeout|aborted/i.test(e.message)) slower();       // el servidor va lento: no insistir más rápido
       log(`  ${gameid} pág ${page + 1}: intento ${t + 1} falló (${e.message})`);
-      await sleep(jitter((t + 1) * 6000));
+      if (t < MAX_RETRIES) await sleep(jitter((t + 1) * RETRY_BASE));
     }
   }
   throw lastErr || new Error('falló');
@@ -95,19 +97,20 @@ for (const g of games) {
   if (!/^[A-Za-z0-9_.\-]{1,48}$/.test(id)) { log(`ID inválido: ${g.id}`); continue; }
   const pages = Math.max(1, Math.min(Number(g.pages) || 1, 100));
   const out = [];
-  let lastFirst = null, consec = 0, note = '';
+  let lastFirst = null, note = '';
+  const tGame = Date.now();
   log(`== ${id} (hasta ${pages} páginas)`);
 
   for (let p = 0; p < pages; p++) {
     if (Date.now() - t0 > MAX_RUN_MS) { note = 'tope de tiempo'; break; }
+    if (Date.now() - tGame > MAX_GAME_MS) { note = 'tope de tiempo del juego'; break; }
     let rows;
     try { rows = await fetchPage(id, p); }
     catch (e) {
       if (e instanceof Blocked) { blocked = true; note = e.message; break; }
-      if (++consec >= MAX_CONSEC_FAILS) { note = `${consec} fallos seguidos (${e.message})`; break; }
-      await sleep(jitter(gap)); continue;
+      note = `se detuvo en la pág ${p + 1} (${e.message}); se guarda lo bajado hasta ahí`;   // sin saltar páginas: no se dejan huecos
+      break;
     }
-    consec = 0;
     if (!rows.length) break;
     const first = String(rows[0].name ?? rows[0].username ?? '');
     if (first && first === lastFirst) { note = 'la API repite la página: no hay más'; break; }
