@@ -6,9 +6,13 @@
 //  - nunca pisa un archivo bueno con uno vacío, roto o mucho más pequeño
 //  - si un juego se corta a mitad, guarda lo bajado solo si no empeora al anterior
 //  - un juego que falla no tumba a los demás
+//
+// Formato de cada fila en data/<juego>.json:
+//   [nombre, posición, rango(0-6), partidas, horas, país]
+// y en el JSON, "ranges" con el rango de posiciones de cada letra (E..S).
 import fs from 'node:fs';
 
-const ENDPOINT = process.env.FC_ENDPOINT || 'https://web.fightcade.com/api/';
+const ENDPOINT = process.env.FC_ENDPOINT || 'https://www.fightcade.com/api/';
 const LIMIT = 100;
 const BASE_GAP = Number(process.env.FC_GAP_MS || 8000);   // pausa normal entre solicitudes (ms)
 const REQ_TIMEOUT = Number(process.env.FC_TIMEOUT_MS || 45000);   // las páginas profundas tardan más en el servidor
@@ -18,10 +22,13 @@ const MAX_GAME_MS = Number(process.env.FC_GAME_MS || 40 * 60 * 1000);   // tope 
 const SHRINK_LIMIT = 0.5;            // si el resultado nuevo es < 50% del anterior, se descarta
 const MAX_RUN_MS = 300 * 60 * 1000;  // tope total de la ejecución (los juegos del final se omiten si se acaba)
 
+// 0 = sin rango. 5 = A y 6 = S confirmados en la web; E, D, C, B por deducción.
+const RANK_LETTER = ['-', 'E', 'D', 'C', 'B', 'A', 'S'];
+
 const t0 = Date.now();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const jitter = (ms) => Math.round(ms * (0.75 + Math.random() * 0.6));
-const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+const num = (v) => { const n = Number(v); return v !== null && v !== '' && Number.isFinite(n) ? n : null; };
 const log = (m) => console.log(m);
 
 let games;
@@ -38,6 +45,11 @@ const extractRows = (j, d = 0) => {
     if (j[k] !== undefined) { const a = extractRows(j[k], d + 1); if (a) return a; }
   }
   return null;
+};
+// Respuesta real: { res:'OK', results:{ results:[...], count:N } }  -> count = total de jugadores
+const extractTotal = (j) => {
+  const c = j && j.results && typeof j.results === 'object' ? num(j.results.count) : null;
+  return c && c > 0 ? c : null;
 };
 
 let gap = BASE_GAP;                                   // se adapta: sube al haber quejas, baja despacio
@@ -68,10 +80,11 @@ async function fetchPage(gameid, page) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const text = await res.text();
       if (/^\s*</.test(text)) { slower(); throw new Error('respuesta HTML (¿Cloudflare?)'); }
-      const rows = extractRows(JSON.parse(text));
+      const json = JSON.parse(text);
+      const rows = extractRows(json);
       if (!rows) throw new Error('respuesta sin lista de jugadores');
       faster();
-      return rows;
+      return { rows, total: extractTotal(json) };
     } catch (e) {
       if (e instanceof Blocked) throw e;
       lastErr = e;
@@ -97,7 +110,8 @@ for (const g of games) {
   if (!/^[A-Za-z0-9_.\-]{1,48}$/.test(id)) { log(`ID inválido: ${g.id}`); continue; }
   const pages = Math.max(1, Math.min(Number(g.pages) || 1, 100));
   const out = [];
-  let lastFirst = null, note = '';
+  const seen = new Set();            // la paginación a veces repite al jugador del borde entre páginas
+  let lastFirst = null, note = '', total = null;
   const tGame = Date.now();
   log(`== ${id} (hasta ${pages} páginas)`);
 
@@ -105,25 +119,45 @@ for (const g of games) {
     if (Date.now() - t0 > MAX_RUN_MS) { note = 'tope de tiempo'; break; }
     if (Date.now() - tGame > MAX_GAME_MS) { note = 'tope de tiempo del juego'; break; }
     let rows;
-    try { rows = await fetchPage(id, p); }
+    try { ({ rows, total } = await fetchPage(id, p)); }
     catch (e) {
       if (e instanceof Blocked) { blocked = true; note = e.message; break; }
       note = `se detuvo en la pág ${p + 1} (${e.message}); se guarda lo bajado hasta ahí`;   // sin saltar páginas: no se dejan huecos
       break;
     }
     if (!rows.length) break;
+    if (p === 0) log('  muestra: ' + JSON.stringify(rows[0]));
     const first = String(rows[0].name ?? rows[0].username ?? '');
     if (first && first === lastFirst) { note = 'la API repite la página: no hay más'; break; }
     lastFirst = first;
-    rows.forEach((r, i) => {
+    for (const r of rows) {
       const name = String(r.name ?? r.username ?? '').trim();
-      if (!name) return;
-      out.push([name, p * LIMIT + i + 1, num(r.rank), num(r.matches), num(r.hours),
-        r.cc ?? r.country_code ?? (r.country && (r.country.iso_code || r.country.cc)) ?? null, num(r.elo)]);
-    });
-    log(`  ${id} pág ${p + 1} OK (${out.length} jugadores)`);
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      // Los datos del juego vienen anidados: gameinfo.<juego>.{rank, num_matches, time_played(segundos)}
+      const gi = (r.gameinfo && (r.gameinfo[id] ?? Object.values(r.gameinfo)[0])) || {};
+      const secs = num(gi.time_played);
+      out.push([
+        name,
+        out.length + 1,                                          // posición real, sin huecos ni duplicados
+        num(gi.rank),                                            // 0-6 (ver RANK_LETTER)
+        num(gi.num_matches),
+        secs == null ? null : Math.round(secs / 36) / 100,       // horas con 2 decimales
+        r.country?.iso_code ?? r.cc ?? r.country_code ?? null
+      ]);
+    }
+    log(`  ${id} pág ${p + 1} OK (${out.length}${total ? ' de ' + total : ''} jugadores)`);
     if (rows.length < LIMIT) break;
+    if (total && (p + 1) * LIMIT >= total) break;                // ya se bajó todo
     await sleep(jitter(gap));
+  }
+
+  // Rango de posiciones de cada letra
+  const ranges = {};
+  for (const [, pos, rank] of out) {
+    if (rank == null) continue;
+    const r = (ranges[rank] ??= { letter: RANK_LETTER[rank] ?? String(rank), n: 0, minPos: pos, maxPos: pos });
+    r.n++; r.minPos = Math.min(r.minPos, pos); r.maxPos = Math.max(r.maxPos, pos);
   }
 
   const old = readOld(id);
@@ -132,10 +166,11 @@ for (const g of games) {
   if (oldCount && out.length < oldCount * SHRINK_LIMIT) {
     log(`[${id}] solo ${out.length} jugadores frente a ${oldCount} anteriores${note ? ' - ' + note : ''}; se conserva el anterior`); continue;
   }
-  writeAtomic(`data/${id}.json`, JSON.stringify({ v: 1, game: id, at: Date.now(), count: out.length, complete: !note, rows: out }));
+  writeAtomic(`data/${id}.json`, JSON.stringify({ v: 2, game: id, at: Date.now(), count: out.length, total, complete: !note, ranges, rows: out }));
   index.games[id] = { at: Date.now(), count: out.length };
   okGames++;
   log(`[${id}] guardado: ${out.length} jugadores${note ? ' (parcial: ' + note + ')' : ''}`);
+  log(`[${id}] rangos: ` + (Object.values(ranges).map((r) => `${r.letter}: pos ${r.minPos}-${r.maxPos} (${r.n})`).join(' | ') || 'ninguno'));
   await sleep(jitter(gap));
 }
 
