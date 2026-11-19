@@ -19,7 +19,6 @@ const REQ_TIMEOUT = Number(process.env.FC_TIMEOUT_MS || 45000);   // las página
 const RETRY_BASE = Number(process.env.FC_RETRY_MS || 6000);
 const MAX_RETRIES = 2;               // 3 intentos por página
 const MAX_GAME_MS = Number(process.env.FC_GAME_MS || 40 * 60 * 1000);   // tope por juego
-const SHRINK_LIMIT = 0.5;            // si el resultado nuevo es < 50% del anterior, se descarta
 const MAX_RUN_MS = 300 * 60 * 1000;  // tope total de la ejecución (los juegos del final se omiten si se acaba)
 
 // 0 = sin rango. 5 = A y 6 = S confirmados en la web; E, D, C, B por deducción.
@@ -46,7 +45,7 @@ const extractRows = (j, d = 0) => {
   }
   return null;
 };
-// Respuesta real: { res:'OK', results:{ results:[...], count:N } }  -> count = total de jugadores
+// Respuesta real: { res:'OK', results:{ results:[...], count:N } }  (count no es un total fiable; no se usa)
 const extractTotal = (j) => {
   const c = j && j.results && typeof j.results === 'object' ? num(j.results.count) : null;
   return c && c > 0 ? c : null;
@@ -146,9 +145,8 @@ for (const g of games) {
         r.country?.iso_code ?? r.cc ?? r.country_code ?? null
       ]);
     }
-    log(`  ${id} pág ${p + 1} OK (${out.length}${total ? ' de ' + total : ''} jugadores)`);
+    log(`  ${id} pág ${p + 1} OK (${out.length} jugadores)`);
     if (rows.length < LIMIT) break;
-    if (total && (p + 1) * LIMIT >= total) break;                // ya se bajó todo
     await sleep(jitter(gap));
   }
 
@@ -163,10 +161,12 @@ for (const g of games) {
   const old = readOld(id);
   const oldCount = old && Array.isArray(old.rows) ? old.rows.length : 0;
   if (!out.length) { log(`[${id}] sin datos nuevos${note ? ' - ' + note : ''}; se conserva el anterior (${oldCount})`); continue; }
-  if (oldCount && out.length < oldCount * SHRINK_LIMIT) {
-    log(`[${id}] solo ${out.length} jugadores frente a ${oldCount} anteriores${note ? ' - ' + note : ''}; se conserva el anterior`); continue;
+  // Si la descarga se cortó y quedó más corta que la anterior, se conserva la anterior.
+  // Si llegó hasta el final (sin nota), se guarda el nuevo aunque tenga menos jugadores.
+  if (note && oldCount && out.length < oldCount) {
+    log(`[${id}] ejecución incompleta (${note}): ${out.length} frente a ${oldCount}; se conserva el anterior`); continue;
   }
-  writeAtomic(`data/${id}.json`, JSON.stringify({ v: 2, game: id, at: Date.now(), count: out.length, total, complete: !note, ranges, rows: out }));
+  writeAtomic(`data/${id}.json`, JSON.stringify({ v: 2, game: id, at: Date.now(), count: out.length, complete: !note, ranges, rows: out }));
   index.games[id] = { at: Date.now(), count: out.length };
   okGames++;
   log(`[${id}] guardado: ${out.length} jugadores${note ? ' (parcial: ' + note + ')' : ''}`);
