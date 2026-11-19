@@ -12,7 +12,7 @@
 // y en el JSON, "ranges" con el rango de posiciones de cada letra (E..S).
 import fs from 'node:fs';
 
-const ENDPOINT = process.env.FC_ENDPOINT || 'https://www.fightcade.com/api/';
+const ENDPOINT = process.env.FC_ENDPOINT || 'https://web.fightcade.com/api/';
 const LIMIT = 100;
 const BASE_GAP = Number(process.env.FC_GAP_MS || 8000);   // pausa normal entre solicitudes (ms)
 const REQ_TIMEOUT = Number(process.env.FC_TIMEOUT_MS || 45000);   // las páginas profundas tardan más en el servidor
