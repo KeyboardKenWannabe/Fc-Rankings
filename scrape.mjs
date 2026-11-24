@@ -3,8 +3,8 @@
 //  - pausas con variación aleatoria, y más largas si el servidor se queja
 //  - respeta Retry-After en 429; se detiene ante 403 o muchos fallos seguidos
 //  - timeout por solicitud; reintentos con espera creciente
-//  - nunca pisa un archivo bueno con uno vacío, roto o mucho más pequeño
-//  - si un juego se corta a mitad, guarda lo bajado solo si no empeora al anterior
+//  - nunca pisa un archivo bueno con uno vacío (sin jugadores)
+//  - siempre guarda el archivo nuevo, aunque tenga menos jugadores que el anterior
 //  - un juego que falla no tumba a los demás
 //
 // Formato de cada fila en data/<juego>.json:
@@ -160,16 +160,14 @@ for (const g of games) {
 
   const old = readOld(id);
   const oldCount = old && Array.isArray(old.rows) ? old.rows.length : 0;
+  // Único caso en que se conserva el archivo anterior: la descarga no trajo ningún jugador
+  // (así un fallo total no deja el juego vacío). En cualquier otro caso se guarda siempre el nuevo,
+  // aunque tenga menos jugadores que el anterior.
   if (!out.length) { log(`[${id}] sin datos nuevos${note ? ' - ' + note : ''}; se conserva el anterior (${oldCount})`); continue; }
-  // Si la descarga se cortó y quedó más corta que la anterior, se conserva la anterior.
-  // Si llegó hasta el final (sin nota), se guarda el nuevo aunque tenga menos jugadores.
-  if (note && oldCount && out.length < oldCount) {
-    log(`[${id}] ejecución incompleta (${note}): ${out.length} frente a ${oldCount}; se conserva el anterior`); continue;
-  }
   writeAtomic(`data/${id}.json`, JSON.stringify({ v: 2, game: id, at: Date.now(), count: out.length, complete: !note, ranges, rows: out }));
   index.games[id] = { at: Date.now(), count: out.length };
   okGames++;
-  log(`[${id}] guardado: ${out.length} jugadores${note ? ' (parcial: ' + note + ')' : ''}`);
+  log(`[${id}] guardado: ${out.length} jugadores${oldCount ? ` (antes ${oldCount})` : ''}${note ? ' (parcial: ' + note + ')' : ''}`);
   log(`[${id}] rangos: ` + (Object.values(ranges).map((r) => `${r.letter}: pos ${r.minPos}-${r.maxPos} (${r.n})`).join(' | ') || 'ninguno'));
   await sleep(jitter(gap));
 }
